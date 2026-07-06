@@ -99,6 +99,20 @@
   .year-btn-active{background:#E4572E;border-color:#E4572E;color:#fff;}
   .year-btn-warn{border-color:#B9762E;color:#D79A5B;}
 
+  /* graveyard point markers (actual locations, from gpkg "Graveyard Location" layer).
+     NB: do NOT set position here — Leaflet's own .leaflet-marker-icon rule already
+     sets position:absolute on this same element (that's what makes its transform-
+     based lat/lng placement work). Overriding it to relative put every marker back
+     into normal document flow, so markers stacked downward in DOM order on top of
+     their correct transform offset — invisible at high zoom (real-world spacing
+     dwarfs the stacking offset) but a visible "trail" once zoomed out far enough
+     that markers converge on nearly the same pixel. */
+  .graveyard-cross{width:16px;height:16px;pointer-events:none;}
+  .graveyard-cross::before,.graveyard-cross::after{content:"";position:absolute;
+    background:#E4372E;border:1px solid #6E140B;}
+  .graveyard-cross::before{left:6px;top:0;width:4px;height:16px;}
+  .graveyard-cross::after{left:0;top:6px;width:16px;height:4px;}
+
   /* map labels over satellite imagery */
   .portion-label{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#fff;
     text-align:center;white-space:nowrap;font-weight:600;pointer-events:none;
@@ -311,12 +325,34 @@ const layersByLpi = {};   // lpi_id -> array of Leaflet layers (parcels can be m
 let farmLabelLayer = null;
 let portionLabelLayer = null;
 
+// Graveyard point markers — actual site locations (centroids of the gpkg
+// "Graveyard Location" polygon footprints), not just portion highlighting.
+// Shown only while the graveyard question (a2_graveyards) is active.
+let graveyardLayer = L.layerGroup();
+fetch('data/graveyards.geojson')
+  .then(r => { if(!r.ok) throw 0; return r.json(); })
+  .then(geojson => {
+    geojson.features.forEach(f => {
+      const [lng, lat] = f.geometry.coordinates;
+      L.marker([lat, lng], {
+        interactive:false,
+        icon: L.divIcon({ className:'graveyard-cross', html:'', iconSize:[16,16], iconAnchor:[8,8] })
+      }).addTo(graveyardLayer);
+    });
+  })
+  .catch(() => {});
+
 // Base parcel styles. Parcels INSIDE the mining right are tinted green;
 // contiguous parcels stay neutral blue.
 const BASE_STYLE       = { color:'#7Fb0d0', weight:1, fillColor:'#1C3E59', fillOpacity:0.15 };
 const BASE_STYLE_INSIDE= { color:'#7Fe0a0', weight:1, fillColor:'#3Fae6f', fillOpacity:0.30 };
-const YELLOW_STYLE = { color:'#F2C14E', weight:2, fillColor:'#F2C14E', fillOpacity:0.35 };
-const RED_STYLE    = { color:'#E4572E', weight:2.5, fillColor:'#E4572E', fillOpacity:0.45 };
+// Higher weight/opacity than the base parcel styles so the highlight reads
+// clearly even over Ujambili/Umsinsini's naturally tan-toned cultivated
+// fields at zoomed-out scale — at the old 0.35 opacity, correctly-highlighted
+// (and correctly-positioned) parcels/graveyard crosses could look like they'd
+// spilled outside the highlight simply because the fill blended into the imagery.
+const YELLOW_STYLE = { color:'#F2C14E', weight:3, fillColor:'#F2C14E', fillOpacity:0.55 };
+const RED_STYLE    = { color:'#E4572E', weight:3.5, fillColor:'#E4572E', fillOpacity:0.6 };
 const SELECT_STYLE = { color:'#FF2FD0', weight:3, fillColor:'#FF2FD0', fillOpacity:0.45 };
 
 function baseStyleFor(props){
@@ -552,6 +588,7 @@ function deselectQuestion(){
   if(row){ row.innerHTML=''; row.style.display='none'; }
   const link = document.getElementById('staticMapLink');
   if(link) link.style.display = 'none';
+  if(map.hasLayer(graveyardLayer)) map.removeLayer(graveyardLayer);
 }
 document.getElementById('topbarClose').addEventListener('click', () => {
   document.querySelectorAll('.q-item').forEach(n=>n.classList.remove('active'));
@@ -587,8 +624,15 @@ function showQuestion(q){
   clearHighlights();
   highlight(unionPortions(q), YELLOW_STYLE);
 
+  // Graveyard question: show actual site locations (from the gpkg), not just
+  // portion highlighting.
+  if(q.id === 'a2_graveyards'){ graveyardLayer.addTo(map); }
+  else if(map.hasLayer(graveyardLayer)){ map.removeLayer(graveyardLayer); }
+
   const nUnion = unionPortions(q).length;
-  const countMsg = q.maps.length > 1
+  const countMsg = q.id === 'a2_graveyards'
+      ? `${nUnion} portions affected (highlighted yellow); ${graveyardLayer.getLayers().length} actual grave/burial-site locations marked (red crosses).`
+      : q.maps.length > 1
       ? `${nUnion} portions affected across all years (highlighted yellow). Pick a year to isolate it (red) and open its map.`
       : (nUnion > 0
           ? `${nUnion} portions affected (highlighted yellow). Open the reference map below.`
