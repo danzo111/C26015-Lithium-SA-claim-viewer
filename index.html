@@ -373,6 +373,41 @@ fetch('data/beneficiary.geojson')
   })
   .catch(() => {});
 
+// A1 (combined current occupation + cultivation, 2025): the static reference
+// map layers actual cultivated-field and homestead/building footprints (from
+// the gpkg's "Cultivated Land 2025" and "Land Occupation 2025" layers) rather
+// than a plain portion highlight — Commercial vs Informal cultivated land,
+// and Commercial (farmhouse) vs Informal (homesteads/buildings) vs School
+// occupation, each styled to match that map's legend.
+let cultivatedLayer = L.layerGroup();
+fetch('data/cultivated_2025.geojson')
+  .then(r => { if(!r.ok) throw 0; return r.json(); })
+  .then(geojson => {
+    L.geoJSON(geojson, {
+      interactive:false,
+      style: f => f.properties.land_type === 'Commercial'
+        ? { color:'#4CAF50', weight:1.5, fillColor:'#4CAF50', fillOpacity:0.4 }
+        : { color:'#E8C13D', weight:1.5, fillColor:'#E8C13D', fillOpacity:0.4 },
+    }).addTo(cultivatedLayer);
+  })
+  .catch(() => {});
+
+let occupationLayer = L.layerGroup();
+fetch('data/occupation_2025.geojson')
+  .then(r => { if(!r.ok) throw 0; return r.json(); })
+  .then(geojson => {
+    L.geoJSON(geojson, {
+      interactive:false,
+      style: f => {
+        const t = f.properties.occupation_type;
+        if(t === 'Commercial (Farmhouse)') return hatchStyle('green');
+        if(t === 'School') return { color:'#4FC3F7', weight:1.5, fillColor:'#4FC3F7', fillOpacity:0.6 };
+        return hatchStyle('magenta'); // Informal (homesteads and buildings)
+      },
+    }).addTo(occupationLayer);
+  })
+  .catch(() => {});
+
 // Hatch-fill patterns for the community-claim/trust-land questions (Madlala,
 // Khoshwane, Ingonyama), mimicking the diagonal-hatch legend swatch used on
 // the static reference maps for these questions. NB: an earlier version of
@@ -384,7 +419,7 @@ fetch('data/beneficiary.geojson')
 // project). The static maps' hatch actually just highlights the SAME farm
 // portions already resolved in MAP_PORTIONS — this reuses that data, just
 // styled to look like the reference maps instead of plain yellow.
-const HATCH_COLORS = { purple:'#B266FF', orange:'#FF8C42', teal:'#3FD6C4', red:'#E4372E' };
+const HATCH_COLORS = { purple:'#B266FF', orange:'#FF8C42', teal:'#3FD6C4', red:'#E4372E', green:'#4CAF50', magenta:'#CC3FCC' };
 function ensureHatchDefs(){
   const svg = map.getPanes().overlayPane.querySelector('svg');
   if(!svg || svg.querySelector('#hatch-defs')) return;
@@ -710,6 +745,8 @@ function deselectQuestion(){
   if(link) link.style.display = 'none';
   if(map.hasLayer(graveyardLayer)) map.removeLayer(graveyardLayer);
   if(map.hasLayer(beneficiaryLayer)) map.removeLayer(beneficiaryLayer);
+  if(map.hasLayer(cultivatedLayer)) map.removeLayer(cultivatedLayer);
+  if(map.hasLayer(occupationLayer)) map.removeLayer(occupationLayer);
 }
 document.getElementById('topbarClose').addEventListener('click', () => {
   document.querySelectorAll('.q-item').forEach(n=>n.classList.remove('active'));
@@ -748,6 +785,10 @@ function showQuestion(q){
   clearHighlights();
   if(q.id === 'a4_trust_state'){
     applyOwnershipChoropleth();
+  } else if(q.id === 'a1_occupation_cultivation'){
+    // handled below by cultivatedLayer/occupationLayer — no portion wash,
+    // matching the reference map (which shows no yellow fill, just the
+    // cultivated-field/homestead footprints over the plain parcel outlines).
   } else if(QUESTION_SUBGROUPS[q.id]){
     QUESTION_SUBGROUPS[q.id].forEach(group => highlight(group.ids, group.style));
   } else {
@@ -764,6 +805,14 @@ function showQuestion(q){
   if(q.id === 'beneficiary'){ beneficiaryLayer.addTo(map); }
   else if(map.hasLayer(beneficiaryLayer)){ map.removeLayer(beneficiaryLayer); }
 
+  // A1 question: show actual cultivated-field and homestead/building
+  // footprints (from the gpkg), not just a portion highlight.
+  if(q.id === 'a1_occupation_cultivation'){ cultivatedLayer.addTo(map); occupationLayer.addTo(map); }
+  else {
+    if(map.hasLayer(cultivatedLayer)) map.removeLayer(cultivatedLayer);
+    if(map.hasLayer(occupationLayer)) map.removeLayer(occupationLayer);
+  }
+
   const nUnion = unionPortions(q).length;
   const countMsg = q.id === 'a2_graveyards'
       ? `${nUnion} portions affected (highlighted yellow); ${graveyardLayer.getLayers().length} actual grave/burial-site locations marked (red crosses).`
@@ -771,6 +820,8 @@ function showQuestion(q){
       ? `All farm portions colored by ownership category — ${Object.entries(OWNER_TYPE_COLORS).map(([k])=>k).join(', ')} — matching the reference map's legend. ${nUnion} portions specifically trigger A4 (inside/contiguous with trust or government ownership).`
       : q.id === 'beneficiary'
       ? `${beneficiaryCount} numbered beneficiary house footprints shown on the Remainder of Longwood, matching the reference map's inset.`
+      : q.id === 'a1_occupation_cultivation'
+      ? `Actual cultivated-field footprints (green = commercial, yellow = informal) and occupation footprints (green hatch = commercial farmhouse, magenta hatch = informal homesteads/buildings, blue = school) shown, matching the reference map's legend.`
       : QUESTION_SUBGROUPS[q.id]
       ? QUESTION_SUBGROUPS[q.id].map(g => {
           const name = Object.keys(HATCH_COLORS).find(n => HATCH_COLORS[n] === g.style.color);
