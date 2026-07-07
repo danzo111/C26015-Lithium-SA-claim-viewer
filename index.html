@@ -113,6 +113,12 @@
   .graveyard-cross::before{left:6px;top:0;width:4px;height:16px;}
   .graveyard-cross::after{left:0;top:6px;width:16px;height:4px;}
 
+  /* beneficiary property number badges (same position:absolute caveat as above) */
+  .benef-num{width:18px;height:18px;border-radius:50%;background:#F2A63A;color:#0F2438;
+    font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;
+    display:flex;align-items:center;justify-content:center;pointer-events:none;
+    border:1px solid #B9762E;}
+
   /* map labels over satellite imagery */
   .portion-label{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#fff;
     text-align:center;white-space:nowrap;font-weight:600;pointer-events:none;
@@ -342,6 +348,119 @@ fetch('data/graveyards.geojson')
   })
   .catch(() => {});
 
+// Beneficiary property house footprints — the actual 6 house plots (from the
+// gpkg's "Beneficiary Property" layer), each numbered to match the static
+// reference map's inset, rather than just highlighting Longwood's Remainder.
+let beneficiaryLayer = L.layerGroup();
+let beneficiaryCount = 0;
+fetch('data/beneficiary.geojson')
+  .then(r => { if(!r.ok) throw 0; return r.json(); })
+  .then(geojson => {
+    beneficiaryCount = geojson.features.length;
+    geojson.features.forEach(f => {
+      const layer = L.geoJSON(f, {
+        style: () => ({ color:'#F2A63A', weight:2, fillColor:'#F2A63A', fillOpacity:0.25 }),
+        interactive:false,
+      }).addTo(beneficiaryLayer);
+      const bounds = layer.getBounds();
+      if(bounds.isValid()){
+        L.marker(bounds.getCenter(), {
+          interactive:false,
+          icon: L.divIcon({ className:'benef-num', html:String(f.properties.prop_num), iconSize:[18,18], iconAnchor:[9,9] })
+        }).addTo(beneficiaryLayer);
+      }
+    });
+  })
+  .catch(() => {});
+
+// Hatch-fill patterns for the community-claim/trust-land questions (Madlala,
+// Khoshwane, Ingonyama), mimicking the diagonal-hatch legend swatch used on
+// the static reference maps for these questions. NB: an earlier version of
+// this app drew the raw "Community Claim"/"Trust Boundary" layers straight
+// from the gpkg for these three questions — that was the WRONG data: those
+// gpkg layers are much broader, mostly-external cadastral datasets (other
+// land registered to these entities elsewhere, e.g. Khoshwane's layer includes
+// Bonnievale/Oban/Redhill/Rolls Park, none of which are in our 62-parcel
+// project). The static maps' hatch actually just highlights the SAME farm
+// portions already resolved in MAP_PORTIONS — this reuses that data, just
+// styled to look like the reference maps instead of plain yellow.
+const HATCH_COLORS = { purple:'#B266FF', orange:'#FF8C42', teal:'#3FD6C4', red:'#E4372E' };
+function ensureHatchDefs(){
+  const svg = map.getPanes().overlayPane.querySelector('svg');
+  if(!svg || svg.querySelector('#hatch-defs')) return;
+  const defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
+  defs.id = 'hatch-defs';
+  Object.entries(HATCH_COLORS).forEach(([name, color]) => {
+      const p = document.createElementNS('http://www.w3.org/2000/svg','pattern');
+      p.setAttribute('id', 'hatch-' + name);
+      p.setAttribute('width', '8'); p.setAttribute('height', '8');
+      p.setAttribute('patternUnits', 'userSpaceOnUse');
+      p.setAttribute('patternTransform', 'rotate(45)');
+      const stripe = document.createElementNS('http://www.w3.org/2000/svg','rect');
+      stripe.setAttribute('width','4'); stripe.setAttribute('height','8');
+      stripe.setAttribute('fill', color); stripe.setAttribute('fill-opacity','0.6');
+      p.appendChild(stripe);
+      defs.appendChild(p);
+    });
+  svg.appendChild(defs);
+}
+function hatchStyle(colorName){
+  return { color: HATCH_COLORS[colorName], weight:2.5, fillColor:'url(#hatch-' + colorName + ')', fillOpacity:1 };
+}
+
+// Some community-claim/trust questions distinguish sub-categories from their
+// own static reference map's methodology panel with different colors, rather
+// than one flat highlight:
+//   Madlala:   points 1+2 (inside / contiguous to the mining right) -> purple;
+//              point 3 (contiguous to tribal trust/government land) -> teal
+//   Khoshwane: point 2 (contiguous to mining right) -> orange (unchanged);
+//              point 3 (contiguous to tribal trust/government land) -> purple
+//   Ingonyama: point 2, the 2 Alexandra Location farms (contiguous to mining
+//              right) -> red; point 3 (contiguous to tribal/government land,
+//              8 portions) -> purple (unchanged)
+// Each group's keys are a verified split of that question's existing (already
+// count-checked) MAP_PORTIONS list — same portions, just split by section so
+// they can be colored to match the static maps' own legend.
+const QUESTION_SUBGROUPS = {
+  a5_madlala: [
+    { style: hatchStyle('purple'), ids: ["N0ET00000001028900002","N0ET00000001028900005","N0ET00000001028900006","N0ET00000001028900007","N0ET00000001028900010","N0ET00000001028900011","N0ET00000001028900012","N0ET00000001028900000","N0ET00000001132800001","N0ET00000001132800002","N0ET00000001132800000","N0ET00000001559000018"] },
+    { style: hatchStyle('teal'), ids: ["N0ET00000001330700002","N0ET00000001330700003","N0ET00000001330700005","N0ET00000001330700006","N0ET00000001330700007","N0ET00000001330700008","N0ET00000001330700009","N0ET00000001330700016","N0ET00000001330700021","N0ET00000001330700025","N0ET00000001330700000","N0ET00000000833200000","N0ET00000000910600003","N0ET00000000910600000"] },
+  ],
+  a5_khoshwane: [
+    { style: hatchStyle('orange'), ids: ["N0ET00000000800300003","N0ET00000000800300009","N0ET00000000910600017","N0ET00000001083700000","N0ET00000001484900001","N0ET00000001484900010"] },
+    { style: hatchStyle('purple'), ids: ["N0ET00000000833200000","N0ET00000000910600003"] },
+  ],
+  a8_ingonyama: [
+    { style: hatchStyle('red'), ids: ["N0ET00000001646000000","N0ET00000001646100000"] },
+    { style: hatchStyle('purple'), ids: ["N0ET00000000833200000","N0ET00000001132800000","N0ET00000001330700001","N0ET00000001330700002","N0ET00000001330700003","N0ET00000001330700017","N0ET00000001330700020","N0ET00000001330700025"] },
+  ],
+};
+
+// A4 (trust/state ownership) question: the static reference map colors EVERY
+// farm portion by its ownership category (a choropleth), not just a yellow
+// highlight on the few portions that trigger a "yes" answer — matching the
+// legend on C26015_Trust_State_Ownership_Draft_20260703.pdf. owner_type is
+// already an attribute on every parcel in parcels.geojson, so this needs no
+// extra data pull, just a different render mode for this one question.
+const OWNER_TYPE_COLORS = {
+  'Company':                 '#E8A9A0',
+  'Government':              '#8C8CC4',
+  'Private Person':          '#E8E296',
+  'Tribal Trust Land':       '#3FBFC0',
+  'Tribal Trust Land & Govt': '#C0392B',
+};
+function ownerTypeStyle(ownerType){
+  const color = OWNER_TYPE_COLORS[ownerType] || '#999999';
+  return { color, weight:1.5, fillColor:color, fillOpacity:0.55 };
+}
+function applyOwnershipChoropleth(){
+  Object.values(layersByLpi).forEach(arr => arr.forEach(l => {
+    const style = ownerTypeStyle(l.feature && l.feature.properties && l.feature.properties.owner_type);
+    l._hl = style;
+    if(!l._selected) l.setStyle(style);
+  }));
+}
+
 // Base parcel styles. Parcels INSIDE the mining right are tinted green;
 // contiguous parcels stay neutral blue.
 const BASE_STYLE       = { color:'#7Fb0d0', weight:1, fillColor:'#1C3E59', fillOpacity:0.15 };
@@ -377,6 +496,7 @@ function renderParcels(geojson){
     }
   }).addTo(map);
   try{ map.fitBounds(parcelLayer.getBounds(), { padding:[40,40] }); }catch(e){}
+  ensureHatchDefs();
 
   addLabels(geojson);
 }
@@ -589,6 +709,7 @@ function deselectQuestion(){
   const link = document.getElementById('staticMapLink');
   if(link) link.style.display = 'none';
   if(map.hasLayer(graveyardLayer)) map.removeLayer(graveyardLayer);
+  if(map.hasLayer(beneficiaryLayer)) map.removeLayer(beneficiaryLayer);
 }
 document.getElementById('topbarClose').addEventListener('click', () => {
   document.querySelectorAll('.q-item').forEach(n=>n.classList.remove('active'));
@@ -620,18 +741,41 @@ function showQuestion(q){
   bar.style.display = 'block';
   document.getElementById('topbarTitle').textContent = q.title;
 
-  // Highlight the union of all this question's portions in yellow
+  // Highlight the union of all this question's portions — hatch-fill for the
+  // community-claim/trust questions (matching the static maps' legend, split
+  // into sub-color groups where the reference map does), plain yellow
+  // otherwise.
   clearHighlights();
-  highlight(unionPortions(q), YELLOW_STYLE);
+  if(q.id === 'a4_trust_state'){
+    applyOwnershipChoropleth();
+  } else if(QUESTION_SUBGROUPS[q.id]){
+    QUESTION_SUBGROUPS[q.id].forEach(group => highlight(group.ids, group.style));
+  } else {
+    highlight(unionPortions(q), YELLOW_STYLE);
+  }
 
   // Graveyard question: show actual site locations (from the gpkg), not just
   // portion highlighting.
   if(q.id === 'a2_graveyards'){ graveyardLayer.addTo(map); }
   else if(map.hasLayer(graveyardLayer)){ map.removeLayer(graveyardLayer); }
 
+  // Beneficiary question: show the actual 6 numbered house footprints (from
+  // the gpkg), not just Longwood Remainder highlighted.
+  if(q.id === 'beneficiary'){ beneficiaryLayer.addTo(map); }
+  else if(map.hasLayer(beneficiaryLayer)){ map.removeLayer(beneficiaryLayer); }
+
   const nUnion = unionPortions(q).length;
   const countMsg = q.id === 'a2_graveyards'
       ? `${nUnion} portions affected (highlighted yellow); ${graveyardLayer.getLayers().length} actual grave/burial-site locations marked (red crosses).`
+      : q.id === 'a4_trust_state'
+      ? `All farm portions colored by ownership category — ${Object.entries(OWNER_TYPE_COLORS).map(([k])=>k).join(', ')} — matching the reference map's legend. ${nUnion} portions specifically trigger A4 (inside/contiguous with trust or government ownership).`
+      : q.id === 'beneficiary'
+      ? `${beneficiaryCount} numbered beneficiary house footprints shown on the Remainder of Longwood, matching the reference map's inset.`
+      : QUESTION_SUBGROUPS[q.id]
+      ? QUESTION_SUBGROUPS[q.id].map(g => {
+          const name = Object.keys(HATCH_COLORS).find(n => HATCH_COLORS[n] === g.style.color);
+          return `${g.ids.length} portions (${name})`;
+        }).join(', ') + ' — hatch-highlighted matching the reference map\'s legend.'
       : q.maps.length > 1
       ? `${nUnion} portions affected across all years (highlighted yellow). Pick a year to isolate it (red) and open its map.`
       : (nUnion > 0
