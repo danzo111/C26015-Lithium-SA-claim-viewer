@@ -119,6 +119,43 @@
     display:flex;align-items:center;justify-content:center;pointer-events:none;
     border:1px solid #B9762E;}
 
+  /* ---- Chat assistant: local Q&A over the claim data already on this page ---- */
+  .chat-fab{position:absolute;bottom:16px;left:16px;z-index:700;width:46px;height:46px;
+    border-radius:50%;background:var(--amber);color:var(--bg);border:none;cursor:pointer;
+    font-size:20px;box-shadow:0 2px 8px rgba(0,0,0,.4);display:flex;align-items:center;
+    justify-content:center;}
+  .chat-fab:hover{opacity:.9;}
+  .chat-panel{position:absolute;bottom:16px;left:16px;z-index:700;width:360px;
+    max-width:calc(100vw - 32px);height:480px;max-height:calc(100vh - 32px);
+    background:var(--panel);border:1px solid var(--border);border-radius:8px;
+    display:none;flex-direction:column;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.5);}
+  .chat-panel.open{display:flex;}
+  .chat-header{padding:10px 12px;border-bottom:1px solid var(--grid);display:flex;
+    align-items:center;justify-content:space-between;background:var(--panel-2);}
+  .chat-header h3{margin:0;font-family:'Space Grotesk',sans-serif;font-size:13px;}
+  .chat-header p{margin:2px 0 0;font-size:10.5px;color:var(--ink-dim);}
+  .chat-close{background:none;border:none;color:var(--ink-dim);font-size:16px;cursor:pointer;}
+  .chat-close:hover{color:var(--ink);}
+  .chat-messages{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:8px;}
+  .chat-msg{display:flex;}
+  .chat-msg-user{justify-content:flex-end;}
+  .chat-bubble{max-width:88%;padding:8px 10px;border-radius:8px;font-size:12.5px;
+    line-height:1.4;white-space:pre-wrap;}
+  .chat-msg-bot .chat-bubble{background:var(--panel-2);border:1px solid var(--grid);}
+  .chat-msg-user .chat-bubble{background:var(--amber);color:var(--bg);}
+  .chat-chips{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 0 0;}
+  .chat-chip{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--amber);
+    background:rgba(15,36,56,.6);border:1px solid var(--amber);padding:3px 8px;
+    border-radius:4px;cursor:pointer;}
+  .chat-chip:hover{background:var(--amber);color:var(--bg);}
+  .chat-input-row{display:flex;gap:6px;padding:10px;border-top:1px solid var(--grid);}
+  .chat-input-row input{flex:1;background:var(--bg);border:1px solid var(--border);
+    border-radius:4px;color:var(--ink);padding:8px;font-size:12.5px;font-family:inherit;}
+  .chat-input-row input:focus{outline:1px solid var(--amber);}
+  .chat-input-row button{background:var(--amber);color:var(--bg);border:none;
+    border-radius:4px;padding:8px 12px;font-size:12.5px;font-weight:500;cursor:pointer;}
+  .chat-input-row button:hover{opacity:.9;}
+
   /* map labels over satellite imagery */
   .portion-label{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#fff;
     text-align:center;white-space:nowrap;font-weight:600;pointer-events:none;
@@ -166,6 +203,23 @@
           <a class="btn-secondary" id="extraLink" href="#" target="_blank" rel="noopener" style="display:none;">Additional document</a>
         </div>
       </div>
+    </div>
+
+    <!-- CHAT ASSISTANT: local Q&A over the questions/portions already loaded -->
+    <button class="chat-fab" id="chatFab" title="Ask about this claim">💬</button>
+    <div class="chat-panel" id="chatPanel">
+      <div class="chat-header">
+        <div>
+          <h3>Claim Assistant</h3>
+          <p>Answers from the loaded trigger questions &amp; portion registry</p>
+        </div>
+        <button class="chat-close" id="chatClose">✕</button>
+      </div>
+      <div class="chat-messages" id="chatMessages"></div>
+      <form class="chat-input-row" id="chatForm">
+        <input type="text" id="chatInput" placeholder='e.g. "portion 12" or "graveyards"' autocomplete="off">
+        <button type="submit">Send</button>
+      </form>
     </div>
   </div>
 </div>
@@ -330,6 +384,7 @@ let parcelLayer = null;
 const layersByLpi = {};   // lpi_id -> array of Leaflet layers (parcels can be multi-part)
 let farmLabelLayer = null;
 let portionLabelLayer = null;
+let PARCEL_FEATURES = []; // raw geojson features, kept for the chat assistant's lookups
 
 // Graveyard point markers — actual site locations (centroids of the gpkg
 // "Graveyard Location" polygon footprints), not just portion highlighting.
@@ -521,6 +576,7 @@ function centroidOf(latlngs){
 }
 
 function renderParcels(geojson){
+  PARCEL_FEATURES = geojson.features || [];
   parcelLayer = L.geoJSON(geojson, {
     style: (feature) => baseStyleFor(feature.properties),
     onEachFeature: (feature, layer) => {
@@ -716,6 +772,7 @@ const qList = document.getElementById('questionList');
 QUESTIONS.forEach((q, i) => {
   const el = document.createElement('div');
   el.className = 'q-item';
+  el.dataset.qid = q.id;
   const tag = q.trigger ? `<span class="q-num">${q.trigger}</span>` : `<span class="q-num">${String(i+1).padStart(2,'0')}</span>`;
   el.innerHTML = `${tag}
     <div><div class="q-text">${q.title}</div>
@@ -901,6 +958,200 @@ function selectMap(q, m, btn){
       `${m.label}: ${ids.length} portions highlighted red; other years remain yellow.`;
   }
 }
+
+/* =========================================================================
+   CHAT ASSISTANT — local, rule-based Q&A over QUESTIONS/MAP_PORTIONS/parcels
+   already loaded on this page. No external API calls, no keys: it just runs
+   the same lookups a user could do by clicking the sidebar/map themselves.
+   ========================================================================= */
+
+const QUESTION_KEYWORDS = {
+  graveyard:'a2_graveyards', grave:'a2_graveyards', burial:'a2_graveyards',
+  cultivat:'b4_cultivation',
+  occupat:'a6_occupation', homestead:'a6_occupation',
+  trust:'a4_trust_state', 'state ownership':'a4_trust_state',
+  madlala:'a5_madlala',
+  khoshwane:'a5_khoshwane',
+  ingonyama:'a8_ingonyama', ingoyama:'a8_ingonyama',
+  beneficiary:'beneficiary',
+  grazing:'grazing_access', 'access route':'grazing_access',
+  spring:'grazing_access', 'water point':'grazing_access',
+};
+const CHAT_STOPWORDS = new Set(['the','a','an','is','are','of','on','in','to','for','and','or',
+  'any','has','have','does','do','which','what','where','portion','portions','claim','show',
+  'find','tell','about','me','please']);
+
+function matchQuestions(lower){
+  const codeM = lower.match(/\b([ab])[\s-]?(\d)\b/i);
+  if(codeM){
+    const code = (codeM[1]+codeM[2]).toUpperCase();
+    const byCode = QUESTIONS.filter(q => q.trigger.toUpperCase() === code);
+    if(byCode.length) return byCode;
+  }
+  const idHits = new Set();
+  Object.entries(QUESTION_KEYWORDS).forEach(([kw,id]) => { if(lower.includes(kw)) idHits.add(id); });
+  if(idHits.size) return QUESTIONS.filter(q => idHits.has(q.id));
+
+  const words = lower.replace(/[^a-z0-9\s]/g,' ').split(/\s+/)
+    .filter(w => w.length > 3 && !CHAT_STOPWORDS.has(w));
+  if(!words.length) return [];
+  const scored = QUESTIONS.map(q => {
+    const hay = (q.title + ' ' + q.desc).toLowerCase();
+    const score = words.reduce((s,w) => s + (hay.includes(w) ? 1 : 0), 0);
+    return { q, score };
+  }).filter(x => x.score >= 2).sort((a,b) => b.score - a.score);
+  return scored.slice(0,3).map(x => x.q);
+}
+
+function searchParcels(lower){
+  const lpiM = lower.match(/n0et\d{17}/i);
+  if(lpiM){
+    const hit = PARCEL_FEATURES.filter(f => f.properties.lpi_id.toLowerCase() === lpiM[0]);
+    if(hit.length) return hit;
+  }
+  const numM = lower.match(/\b(?:ptn|portion|pt|rem|remainder|re)\.?\s*(\d+)\b/);
+  let candidates = PARCEL_FEATURES;
+  if(numM){
+    const num = parseInt(numM[1], 10);
+    candidates = candidates.filter(f => parseInt(f.properties.lpi_id.slice(-5), 10) === num);
+  }
+  const farmWords = lower
+    .replace(/\b(?:ptn|portion|pt|rem|remainder|re)\.?\s*\d+\b/g, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+    .filter(w => w.length > 2 && !CHAT_STOPWORDS.has(w) && !['ptn','pt','rem','farm'].includes(w));
+  if(farmWords.length){
+    const farmFiltered = candidates.filter(f => {
+      const fn = f.properties.farm_name.toLowerCase();
+      return farmWords.some(w => fn.includes(w));
+    });
+    if(farmFiltered.length) candidates = farmFiltered;
+    else if(!numM) return []; // farm words given but matched nothing, and no portion number to fall back on
+  }
+  if(!numM && !farmWords.length) return [];
+  return candidates;
+}
+
+function dedupeByLpi(feats){
+  const seen = new Set(), out = [];
+  feats.forEach(f => { if(!seen.has(f.properties.lpi_id)){ seen.add(f.properties.lpi_id); out.push(f); } });
+  return out;
+}
+
+function addMessage(role, text, chips){
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-msg chat-msg-' + role;
+  const inner = document.createElement('div');
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble';
+  bubble.textContent = text;
+  inner.appendChild(bubble);
+  if(chips && chips.length){
+    const chipRow = document.createElement('div');
+    chipRow.className = 'chat-chips';
+    chips.forEach(c => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chat-chip';
+      b.textContent = c.label;
+      b.addEventListener('click', c.onClick);
+      chipRow.appendChild(b);
+    });
+    inner.appendChild(chipRow);
+  }
+  wrap.appendChild(inner);
+  const messages = document.getElementById('chatMessages');
+  messages.appendChild(wrap);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function runQuestionChat(q){
+  document.querySelectorAll('.q-item').forEach(n => n.classList.remove('active'));
+  const el = document.querySelector(`.q-item[data-qid="${q.id}"]`);
+  if(el) el.classList.add('active');
+  showQuestion(q);
+  const n = unionPortions(q).length;
+  const label = q.trigger !== '—' ? `Trigger ${q.trigger}` : 'This dataset';
+  addMessage('bot', `${label}: ${q.title}\n\n${n} portion${n===1?'':'s'} highlighted on the map` +
+    (q.maps.length > 1 ? ` across ${q.maps.length} years — pick a year in the top bar to isolate it.` : '.'));
+}
+
+function selectParcelChat(props){
+  const arr = layersByLpi[props.lpi_id];
+  if(arr && arr.length){
+    openDossier(props, arr[0]);
+    try{ map.fitBounds(L.featureGroup(arr).getBounds(), { padding:[60,60], maxZoom:16 }); }catch(e){}
+  }
+}
+
+function describeParcelChat(f){
+  const p = f.properties;
+  selectParcelChat(p);
+  const areaHa = p.area_m2 ? (p.area_m2/10000).toFixed(2) + ' ha' : 'unknown area';
+  addMessage('bot', `${p.portion_id} — ${areaHa}, status: ${p.status||'—'}, owner: ${p.current_owner||'—'} (${p.owner_type||'—'}).`);
+}
+
+function handleChatQuery(raw){
+  const text = raw.trim();
+  if(!text) return;
+  addMessage('user', text);
+  const lower = text.toLowerCase();
+
+  if(/^(help|hi|hello|hey)\b/.test(lower) || /what can (you|this) (do|answer)/.test(lower)){
+    addMessage('bot',
+      'I can look up:\n' +
+      '• a trigger question — e.g. "A2", "graveyards", "grazing access"\n' +
+      '• a portion or farm — e.g. "portion 12", "Longwood", or a 21-digit LPI key\n\n' +
+      'Try one of these trigger questions:',
+      QUESTIONS.map(q => ({ label: q.trigger !== '—' ? q.trigger : q.id, onClick: () => runQuestionChat(q) })));
+    return;
+  }
+
+  const qMatches = matchQuestions(lower);
+  const parcelHits = dedupeByLpi(searchParcels(lower));
+
+  if(qMatches.length === 1 && parcelHits.length === 0){
+    runQuestionChat(qMatches[0]);
+    return;
+  }
+  if(qMatches.length > 1){
+    addMessage('bot', `I found ${qMatches.length} matching trigger questions — which one?`,
+      qMatches.map(q => ({ label: (q.trigger !== '—' ? q.trigger + ': ' : '') + q.title.split(' — ')[0], onClick: () => runQuestionChat(q) })));
+    return;
+  }
+  if(parcelHits.length === 1){
+    describeParcelChat(parcelHits[0]);
+    return;
+  }
+  if(parcelHits.length > 1){
+    if(parcelHits.length > 8){
+      addMessage('bot', `That matches ${parcelHits.length} portions — try adding a farm name or portion number to narrow it down (e.g. "portion 3 Longwood").`);
+    } else {
+      addMessage('bot', `Found ${parcelHits.length} matching portions:`,
+        parcelHits.map(f => ({ label: f.properties.portion_id, onClick: () => describeParcelChat(f) })));
+    }
+    return;
+  }
+  addMessage('bot', 'I couldn\'t match that to a trigger question or a portion/farm. Try a trigger code (A1–A8, B4), a keyword like "graveyards" or "grazing", or a portion/farm name like "portion 12" or "Longwood". Type "help" for a list.');
+}
+
+const chatFab = document.getElementById('chatFab');
+const chatPanel = document.getElementById('chatPanel');
+chatFab.addEventListener('click', () => {
+  chatPanel.classList.add('open');
+  document.getElementById('chatInput').focus();
+  if(!chatPanel.dataset.greeted){
+    chatPanel.dataset.greeted = '1';
+    addMessage('bot', 'Ask me about a trigger question (e.g. "graveyards", "A2") or a specific portion/farm (e.g. "portion 12", "Longwood"). Type "help" any time.');
+  }
+});
+document.getElementById('chatClose').addEventListener('click', () => chatPanel.classList.remove('open'));
+document.getElementById('chatForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const input = document.getElementById('chatInput');
+  const val = input.value;
+  input.value = '';
+  handleChatQuery(val);
+});
 </script>
 </body>
 </html>
