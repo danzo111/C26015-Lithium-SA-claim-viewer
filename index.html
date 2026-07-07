@@ -331,9 +331,9 @@ const QUESTIONS = [
     title:"Beneficiary property house locations (Afli Land Holdings / BEG Investments / Pamela Grobler agreement)",
     desc:"Supporting dataset, not a Section A/B trigger. Six agreed beneficiary residences on the Remainder of Longwood No.10289-ET.",
     maps:[ { label:"Beneficiary locations", file:"maps/C26015_Beneficiary_Location_Draft_20260703.pdf" } ] },
-  { id:"grazing_access", trigger:"A3?",
-    title:"Are there any water points, springs, wells, or traditional access routes used by the surrounding community? — Grazing & access routes",
-    desc:"NOTE: not in the trigger summary sheet. Likely answers A3 (water points / springs / traditional access) but unconfirmed — no portion highlight; verify before client use.",
+  { id:"grazing_access", trigger:"A1",
+    title:"Where does current aerial imagery indicate potential grazing areas and traditional access routes that may suggest land is currently being grazed or accessed by persons who do not hold formal title? — Grazing & access routes",
+    desc:"Trigger A1 (confirmed by this map's own header — the earlier \"A3?\" guess was wrong). Modelled potential grazing areas (1,000 m buffer around settlement clusters, excluding 100 m around individual homesteads/75 m footpaths/150 m roads/250 m rivers/50 m cultivated land, <1 ha removed) + digitized traditional access routes/footpaths + land occupation.",
     maps:[ { label:"Grazing & access routes", file:"maps/C26015_Longstanding_Potential_Grazing_Areas_and_Traditional_Access_Routes.pdf" } ] },
 ];
 // NB: excluded per the checked doc — not registered, so not in the claim:
@@ -463,6 +463,36 @@ fetch('data/occupation_2025.geojson')
   })
   .catch(() => {});
 
+// Grazing & access routes question: both "Potential Grazing Area" (a single
+// modelled polygon) and "Traditional Access Route" (584 route/footpath line
+// segments) already exist precomputed in the gpkg — the buffering/exclusion
+// methodology described on the static map's notes panel was already run by
+// the surveyor, not something this app needs to reproduce. Land occupation
+// (commercial farmhouse/informal homesteads/school) reuses occupationLayer,
+// since this map uses the same 3 categories as the A1 cultivation map.
+let grazingLayer = L.layerGroup();
+fetch('data/grazing_area.geojson')
+  .then(r => { if(!r.ok) throw 0; return r.json(); })
+  .then(geojson => {
+    L.geoJSON(geojson, { interactive:false, style: () => hatchStyle('olive') }).addTo(grazingLayer);
+  })
+  .catch(() => {});
+
+let accessRoutesLayer = L.layerGroup();
+let accessRoutesCount = 0;
+fetch('data/access_routes.geojson')
+  .then(r => { if(!r.ok) throw 0; return r.json(); })
+  .then(geojson => {
+    accessRoutesCount = geojson.features.length;
+    L.geoJSON(geojson, {
+      interactive:false,
+      style: f => f.properties.designation === 'Footpath'
+        ? { color:'#EDEDED', weight:1.5, dashArray:'4,4' }
+        : { color:'#EDEDED', weight:2 },
+    }).addTo(accessRoutesLayer);
+  })
+  .catch(() => {});
+
 // Hatch-fill patterns for the community-claim/trust-land questions (Madlala,
 // Khoshwane, Ingonyama), mimicking the diagonal-hatch legend swatch used on
 // the static reference maps for these questions. NB: an earlier version of
@@ -474,7 +504,7 @@ fetch('data/occupation_2025.geojson')
 // project). The static maps' hatch actually just highlights the SAME farm
 // portions already resolved in MAP_PORTIONS — this reuses that data, just
 // styled to look like the reference maps instead of plain yellow.
-const HATCH_COLORS = { purple:'#B266FF', orange:'#FF8C42', teal:'#3FD6C4', red:'#E4372E', green:'#4CAF50', magenta:'#CC3FCC' };
+const HATCH_COLORS = { purple:'#B266FF', orange:'#FF8C42', teal:'#3FD6C4', red:'#E4372E', green:'#4CAF50', magenta:'#CC3FCC', olive:'#C7D96B' };
 function ensureHatchDefs(){
   const svg = map.getPanes().overlayPane.querySelector('svg');
   if(!svg || svg.querySelector('#hatch-defs')) return;
@@ -804,6 +834,8 @@ function deselectQuestion(){
   if(map.hasLayer(beneficiaryLayer)) map.removeLayer(beneficiaryLayer);
   if(map.hasLayer(cultivatedLayer)) map.removeLayer(cultivatedLayer);
   if(map.hasLayer(occupationLayer)) map.removeLayer(occupationLayer);
+  if(map.hasLayer(grazingLayer)) map.removeLayer(grazingLayer);
+  if(map.hasLayer(accessRoutesLayer)) map.removeLayer(accessRoutesLayer);
 }
 document.getElementById('topbarClose').addEventListener('click', () => {
   document.querySelectorAll('.q-item').forEach(n=>n.classList.remove('active'));
@@ -842,10 +874,11 @@ function showQuestion(q){
   clearHighlights();
   if(q.id === 'a4_trust_state'){
     applyOwnershipChoropleth();
-  } else if(q.id === 'a1_occupation_cultivation'){
-    // handled below by cultivatedLayer/occupationLayer — no portion wash,
-    // matching the reference map (which shows no yellow fill, just the
-    // cultivated-field/homestead footprints over the plain parcel outlines).
+  } else if(q.id === 'a1_occupation_cultivation' || q.id === 'grazing_access'){
+    // handled below by cultivatedLayer/occupationLayer/grazingLayer/
+    // accessRoutesLayer — no portion wash, matching the reference maps
+    // (which show no yellow fill, just the actual footprints/routes over
+    // the plain parcel outlines).
   } else if(QUESTION_SUBGROUPS[q.id]){
     QUESTION_SUBGROUPS[q.id].forEach(group => highlight(group.ids, group.style));
   } else {
@@ -862,12 +895,25 @@ function showQuestion(q){
   if(q.id === 'beneficiary'){ beneficiaryLayer.addTo(map); }
   else if(map.hasLayer(beneficiaryLayer)){ map.removeLayer(beneficiaryLayer); }
 
-  // A1 question: show actual cultivated-field and homestead/building
-  // footprints (from the gpkg), not just a portion highlight.
-  if(q.id === 'a1_occupation_cultivation'){ cultivatedLayer.addTo(map); occupationLayer.addTo(map); }
+  // A1 question: show actual cultivated-field footprints (from the gpkg),
+  // not just a portion highlight.
+  if(q.id === 'a1_occupation_cultivation'){ cultivatedLayer.addTo(map); }
+  else if(map.hasLayer(cultivatedLayer)){ map.removeLayer(cultivatedLayer); }
+
+  // Land occupation footprints are shared between A1 (cultivation) and the
+  // grazing/access question — both reference maps use the same 3 occupation
+  // categories (commercial farmhouse / informal homesteads / school).
+  if(q.id === 'a1_occupation_cultivation' || q.id === 'grazing_access'){ occupationLayer.addTo(map); }
+  else if(map.hasLayer(occupationLayer)){ map.removeLayer(occupationLayer); }
+
+  // Grazing/access question: show the actual modelled grazing area + digitized
+  // access routes/footpaths (from the gpkg) — the buffering/exclusion
+  // methodology on the static map's notes panel was already run by the
+  // surveyor and baked into these layers, not something to reproduce here.
+  if(q.id === 'grazing_access'){ grazingLayer.addTo(map); accessRoutesLayer.addTo(map); }
   else {
-    if(map.hasLayer(cultivatedLayer)) map.removeLayer(cultivatedLayer);
-    if(map.hasLayer(occupationLayer)) map.removeLayer(occupationLayer);
+    if(map.hasLayer(grazingLayer)) map.removeLayer(grazingLayer);
+    if(map.hasLayer(accessRoutesLayer)) map.removeLayer(accessRoutesLayer);
   }
 
   const nUnion = unionPortions(q).length;
@@ -879,6 +925,8 @@ function showQuestion(q){
       ? `${beneficiaryCount} numbered beneficiary house footprints shown on the Remainder of Longwood, matching the reference map's inset.`
       : q.id === 'a1_occupation_cultivation'
       ? `Actual cultivated-field footprints (green = commercial, yellow = informal) and occupation footprints (green hatch = commercial farmhouse, magenta hatch = informal homesteads/buildings, blue = school) shown, matching the reference map's legend.`
+      : q.id === 'grazing_access'
+      ? `Modelled potential grazing area (olive hatch), ${accessRoutesCount} access route/footpath segments, and land occupation footprints shown, matching the reference map's legend.`
       : QUESTION_SUBGROUPS[q.id]
       ? QUESTION_SUBGROUPS[q.id].map(g => {
           const name = Object.keys(HATCH_COLORS).find(n => HATCH_COLORS[n] === g.style.color);
