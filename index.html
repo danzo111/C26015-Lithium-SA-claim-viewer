@@ -60,6 +60,15 @@
     border:1px solid var(--amber);padding:4px 8px;border-radius:4px;display:inline-block;}
   .map-topbar a.doc-link:hover{background:var(--amber);color:var(--bg);}
 
+  #topbarLegend{margin-top:8px;}
+  .legend-heading{font-family:'IBM Plex Mono',monospace;font-size:9.5px;text-transform:uppercase;
+    letter-spacing:.5px;color:var(--ink-dim);margin:8px 0 3px;}
+  .legend-heading:first-child{margin-top:0;}
+  .legend-row{display:flex;align-items:center;gap:7px;font-size:11px;line-height:1.3;margin:3px 0;}
+  .legend-swatch{width:18px;height:13px;flex:0 0 auto;border:1px solid rgba(255,255,255,.3);}
+  .legend-line{width:18px;flex:0 0 auto;border-top:2px solid #EDEDED;}
+  .legend-line.dashed{border-top-style:dashed;}
+
   /* ---- Parcel dossier panel (signature element: diagram plate) ---- */
   .dossier{position:absolute;top:0;right:0;height:100%;width:340px;
     background:var(--panel);border-left:1px solid var(--border);
@@ -187,6 +196,7 @@
       <h2 id="topbarTitle"></h2>
       <p id="topbarDesc"></p>
       <a class="doc-link" id="topbarDoc" href="#" target="_blank" rel="noopener">View reference map (PDF)</a>
+      <div id="topbarLegend"></div>
     </div>
     <div id="map"></div>
 
@@ -434,18 +444,127 @@ fetch('data/beneficiary.geojson')
 // than a plain portion highlight — Commercial vs Informal cultivated land,
 // and Commercial (farmhouse) vs Informal (homesteads/buildings) vs School
 // occupation, each styled to match that map's legend.
-let cultivatedLayer = L.layerGroup();
-fetch('data/cultivated_2025.geojson')
+function cultivatedStyle(f){
+  return f.properties.land_type === 'Commercial'
+    ? { color:'#4CAF50', weight:1.5, fillColor:'#4CAF50', fillOpacity:0.4 }
+    : { color:'#E8C13D', weight:1.5, fillColor:'#E8C13D', fillOpacity:0.4 };
+}
+function loadCultivatedYear(url){
+  const layer = L.layerGroup();
+  fetch(url)
+    .then(r => { if(!r.ok) throw 0; return r.json(); })
+    .then(geojson => { L.geoJSON(geojson, { interactive:false, style: cultivatedStyle }).addTo(layer); })
+    .catch(() => {});
+  return layer;
+}
+let cultivatedLayer = loadCultivatedYear('data/cultivated_2025.geojson');
+
+// B4 (cultivation, 1955-2025): each year already exists precomputed in the
+// gpkg with the same Land_type (Commercial/Informal) attribute as 2025 —
+// shown when a year button is picked, same styling as the A1 cultivation map.
+const CULTIVATED_YEAR_LAYERS = {
+  '1955': loadCultivatedYear('data/cultivated_1955.geojson'),
+  '1976': loadCultivatedYear('data/cultivated_1976.geojson'),
+  '1992': loadCultivatedYear('data/cultivated_1992.geojson'),
+  '2013': loadCultivatedYear('data/cultivated_2013.geojson'),
+  '2019': loadCultivatedYear('data/cultivated_2019.geojson'),
+  '2025': cultivatedLayer,
+};
+
+// A6 (continuous occupation since 1993): the static reference maps stack
+// each year's OWN raw footprint layer — 1992 (solid fill) at the bottom,
+// each later year drawn on top in a progressively denser hatch — so a
+// feature that persisted across multiple years is only ever shown with the
+// TOPMOST (most recent) year's symbology, exactly matching the reference
+// maps' "only visible in 1992" / "visible in 1992, 2013 and 2019" callouts.
+// (An earlier version of this used the gpkg's derived "Continuous Land
+// Occupation" layer with its own continuity classification — that's a
+// different, coarser thing than what these maps actually draw, so this
+// replaces it with the 4 raw year layers stacked directly.)
+const OCCUPATION_YEAR_DATA = { '1992':null, '2013':null, '2019':null, '2025':null };
+['1992','2013','2019'].forEach(year => {
+  fetch(`data/occupation_${year}.geojson`)
+    .then(r => { if(!r.ok) throw 0; return r.json(); })
+    .then(geojson => { OCCUPATION_YEAR_DATA[year] = geojson; })
+    .catch(() => {});
+});
+fetch('data/occupation_2025.geojson')
   .then(r => { if(!r.ok) throw 0; return r.json(); })
-  .then(geojson => {
-    L.geoJSON(geojson, {
-      interactive:false,
-      style: f => f.properties.land_type === 'Commercial'
-        ? { color:'#4CAF50', weight:1.5, fillColor:'#4CAF50', fillOpacity:0.4 }
-        : { color:'#E8C13D', weight:1.5, fillColor:'#E8C13D', fillOpacity:0.4 },
-    }).addTo(cultivatedLayer);
-  })
+  .then(geojson => { OCCUPATION_YEAR_DATA['2025'] = geojson; })
   .catch(() => {});
+
+function occCategoryColor(occupationType){
+  if(occupationType === 'Commercial (Farmhouse)') return '#4CAF50';
+  if(occupationType === 'School') return '#4FC3F7';
+  return '#CC3FCC'; // Informal (homesteads and buildings)
+}
+const _tieredPatternIds = new Set();
+function ensureTieredPattern(id, color, tile, stripe, angle){
+  if(_tieredPatternIds.has(id)) return;
+  const svg = map.getPanes().overlayPane.querySelector('svg');
+  if(!svg) return;
+  let defs = svg.querySelector('#hatch-defs');
+  if(!defs){ defs = document.createElementNS('http://www.w3.org/2000/svg','defs'); defs.id = 'hatch-defs'; svg.appendChild(defs); }
+  _tieredPatternIds.add(id);
+  const p = document.createElementNS('http://www.w3.org/2000/svg','pattern');
+  p.setAttribute('id', id);
+  p.setAttribute('width', tile); p.setAttribute('height', tile);
+  p.setAttribute('patternUnits', 'userSpaceOnUse');
+  p.setAttribute('patternTransform', `rotate(${angle})`);
+  const stripeEl = document.createElementNS('http://www.w3.org/2000/svg','rect');
+  stripeEl.setAttribute('width', stripe); stripeEl.setAttribute('height', tile);
+  stripeEl.setAttribute('fill', color); stripeEl.setAttribute('fill-opacity', '0.7');
+  p.appendChild(stripeEl);
+  defs.appendChild(p);
+}
+// Explicitly distinct symbology per year (not just density): 1992 solid,
+// 2013 forward hatch ("/"), 2019 backward hatch ("\"), 2025 horizontal
+// hatch ("—") — four visually unambiguous patterns, one per year.
+const HATCH_TILE = 10, HATCH_STRIPE = 3;
+const HATCH_ANGLE_NAME = { 45:'fwd', '-45':'bwd', 90:'horiz' };
+function drawHatch(group, geojson, angle){
+  L.geoJSON(geojson, { interactive:false, style: f => {
+    const color = occCategoryColor(f.properties.occupation_type);
+    const id = `hatch-${HATCH_ANGLE_NAME[angle]}-${color.slice(1)}`;
+    ensureTieredPattern(id, color, HATCH_TILE, HATCH_STRIPE, angle);
+    return { color, weight:1.2, fillColor:`url(#${id})`, fillOpacity:1 };
+  }}).addTo(group);
+}
+function renderOccupationYearLayer(geojson, tier){
+  const group = L.layerGroup();
+  if(tier === 0){ // 1992: solid
+    L.geoJSON(geojson, { interactive:false, style: f => {
+      const color = occCategoryColor(f.properties.occupation_type);
+      return { color, weight:1, fillColor:color, fillOpacity:0.55 };
+    }}).addTo(group);
+  } else if(tier === 1){ drawHatch(group, geojson, 45); }   // 2013: forward hatch
+  else if(tier === 2){ drawHatch(group, geojson, -45); }    // 2019: backward hatch
+  else { drawHatch(group, geojson, 90); }                   // 2025: horizontal hatch
+  return group;
+}
+const A6_YEAR_STACK = {
+  '1992': ['1992'],
+  '1992–2013': ['1992','2013'],
+  '1992–2019': ['1992','2013','2019'],
+  '1992–2025': ['1992','2013','2019','2025'],
+};
+function buildA6Layer(label){
+  const group = L.layerGroup();
+  (A6_YEAR_STACK[label] || []).forEach((year, tier) => {
+    const data = OCCUPATION_YEAR_DATA[year];
+    if(data) renderOccupationYearLayer(data, tier).addTo(group);
+  });
+  return group;
+}
+
+// Currently-shown year-specific overlay (B4 cultivated-year footprints or A6
+// continuous-occupation footprints) — swapped out each time a year/range
+// button is clicked, cleared when the question changes.
+let yearOverlayLayer = null;
+function clearYearOverlay(){
+  if(yearOverlayLayer && map.hasLayer(yearOverlayLayer)) map.removeLayer(yearOverlayLayer);
+  yearOverlayLayer = null;
+}
 
 let occupationLayer = L.layerGroup();
 fetch('data/occupation_2025.geojson')
@@ -581,17 +700,100 @@ function applyOwnershipChoropleth(){
   }));
 }
 
+/* =========================================================================
+   LEGENDS — one per question with custom map symbology (matching each
+   static reference map's own "Legend:" box), rendered in the topbar.
+   CSS repeating-linear-gradient swatches, not the map's own SVG patterns,
+   so the legend never depends on a layer having been drawn yet.
+   ========================================================================= */
+function fillSwatch(color){ return { type:'fill', css:`background:${color};` }; }
+function hatchSwatch(color, angle){
+  return { type:'fill', css:`background:repeating-linear-gradient(${angle}deg, ${color} 0px, ${color} 3px, transparent 3px, transparent 9px);` };
+}
+function lineSwatch(dashed){ return { type:'line', dashed:!!dashed }; }
+
+const LAND_OCCUPATION_LEGEND = { heading:'Land occupation', items:[
+  { label:'Commercial (farmhouse)', ...hatchSwatch('#4CAF50', 45) },
+  { label:'Informal (homesteads and buildings)', ...hatchSwatch('#CC3FCC', 45) },
+  { label:'School', ...fillSwatch('#4FC3F7') },
+]};
+
+const LEGENDS = {
+  a2_graveyards: [{ items:[
+    { label:'Grave / burial site', ...fillSwatch('#E4372E') },
+  ]}],
+  a4_trust_state: [{ heading:'Farm portion ownership', items:
+    Object.entries(OWNER_TYPE_COLORS).map(([label, color]) => ({ label, ...fillSwatch(color) }))
+  }],
+  a5_madlala: [{ items:[
+    { label:'Inside / contiguous to mining right', ...hatchSwatch(HATCH_COLORS.purple, 45) },
+    { label:'Contiguous to tribal/government land', ...hatchSwatch(HATCH_COLORS.teal, 45) },
+  ]}],
+  a5_khoshwane: [{ items:[
+    { label:'Contiguous to mining right', ...hatchSwatch(HATCH_COLORS.orange, 45) },
+    { label:'Contiguous to tribal/government land', ...hatchSwatch(HATCH_COLORS.purple, 45) },
+  ]}],
+  a8_ingonyama: [{ items:[
+    { label:'Contiguous to mining right (Alexandra farms)', ...hatchSwatch(HATCH_COLORS.red, 45) },
+    { label:'Contiguous to tribal/government land', ...hatchSwatch(HATCH_COLORS.purple, 45) },
+  ]}],
+  beneficiary: [{ items:[
+    { label:'Beneficiary house plot (numbered 1–6)', ...fillSwatch('#F2A63A') },
+  ]}],
+  a1_occupation_cultivation: [
+    { heading:'Cultivated land', items:[
+      { label:'Commercial', ...fillSwatch('#4CAF50') },
+      { label:'Informal', ...fillSwatch('#E8C13D') },
+    ]},
+    LAND_OCCUPATION_LEGEND,
+  ],
+  grazing_access: [
+    { heading:'Grazing & access', items:[
+      { label:'Potential grazing area', ...hatchSwatch(HATCH_COLORS.olive, 45) },
+      { label:'Access route', ...lineSwatch(false) },
+      { label:'Footpath', ...lineSwatch(true) },
+    ]},
+    LAND_OCCUPATION_LEGEND,
+  ],
+  b4_cultivation: [{ heading:'Cultivated land', items:[
+    { label:'Commercial', ...fillSwatch('#4CAF50') },
+    { label:'Informal', ...fillSwatch('#E8C13D') },
+  ]}],
+  a6_occupation: [
+    { heading:'Category', items:[
+      { label:'Commercial (farmhouse)', ...fillSwatch('#4CAF50') },
+      { label:'Informal (homesteads and buildings)', ...fillSwatch('#CC3FCC') },
+      { label:'School', ...fillSwatch('#4FC3F7') },
+    ]},
+    { heading:'Year shown (pattern)', items:[
+      { label:'1992 — solid', ...fillSwatch('#8A97A6') },
+      { label:'2013 — forward hatch', ...hatchSwatch('#8A97A6', 45) },
+      { label:'2019 — backward hatch', ...hatchSwatch('#8A97A6', -45) },
+      { label:'2025 — horizontal hatch', ...hatchSwatch('#8A97A6', 0) },
+    ]},
+  ],
+};
+
+function renderLegend(qid){
+  const el = document.getElementById('topbarLegend');
+  const groups = LEGENDS[qid];
+  if(!groups){ el.innerHTML = ''; return; }
+  el.innerHTML = groups.map(group => {
+    const heading = group.heading ? `<div class="legend-heading">${group.heading}</div>` : '';
+    const rows = group.items.map(item => {
+      const swatch = item.type === 'line'
+        ? `<span class="legend-line${item.dashed ? ' dashed' : ''}"></span>`
+        : `<span class="legend-swatch" style="${item.css}"></span>`;
+      return `<div class="legend-row">${swatch}<span>${item.label}</span></div>`;
+    }).join('');
+    return heading + rows;
+  }).join('');
+}
+
 // Base parcel styles. Parcels INSIDE the mining right are tinted green;
 // contiguous parcels stay neutral blue.
 const BASE_STYLE       = { color:'#7Fb0d0', weight:1, fillColor:'#1C3E59', fillOpacity:0.15 };
 const BASE_STYLE_INSIDE= { color:'#7Fe0a0', weight:1, fillColor:'#3Fae6f', fillOpacity:0.30 };
-// Higher weight/opacity than the base parcel styles so the highlight reads
-// clearly even over Ujambili/Umsinsini's naturally tan-toned cultivated
-// fields at zoomed-out scale — at the old 0.35 opacity, correctly-highlighted
-// (and correctly-positioned) parcels/graveyard crosses could look like they'd
-// spilled outside the highlight simply because the fill blended into the imagery.
-const YELLOW_STYLE = { color:'#F2C14E', weight:3, fillColor:'#F2C14E', fillOpacity:0.55 };
-const RED_STYLE    = { color:'#E4572E', weight:3.5, fillColor:'#E4572E', fillOpacity:0.6 };
 const SELECT_STYLE = { color:'#FF2FD0', weight:3, fillColor:'#FF2FD0', fillOpacity:0.45 };
 
 function baseStyleFor(props){
@@ -836,6 +1038,8 @@ function deselectQuestion(){
   if(map.hasLayer(occupationLayer)) map.removeLayer(occupationLayer);
   if(map.hasLayer(grazingLayer)) map.removeLayer(grazingLayer);
   if(map.hasLayer(accessRoutesLayer)) map.removeLayer(accessRoutesLayer);
+  clearYearOverlay();
+  document.getElementById('topbarLegend').innerHTML = '';
 }
 document.getElementById('topbarClose').addEventListener('click', () => {
   document.querySelectorAll('.q-item').forEach(n=>n.classList.remove('active'));
@@ -863,26 +1067,24 @@ function unionPortions(q){
 let activeQuestion = null;
 function showQuestion(q){
   activeQuestion = q;
+  clearYearOverlay();
   const bar = document.getElementById('topbar');
   bar.style.display = 'block';
   document.getElementById('topbarTitle').textContent = q.title;
+  renderLegend(q.id);
 
   // Highlight the union of all this question's portions — hatch-fill for the
   // community-claim/trust questions (matching the static maps' legend, split
-  // into sub-color groups where the reference map does), plain yellow
-  // otherwise.
+  // into sub-color groups where the reference map does). No generic
+  // yellow/red "affected portion" wash anymore — parcels only change color
+  // for the questions where that color IS the map itself (A4's ownership
+  // choropleth, the A5/A8 hatch splits); everything else relies on its own
+  // overlay layer (crosses, footprints, routes) instead.
   clearHighlights();
   if(q.id === 'a4_trust_state'){
     applyOwnershipChoropleth();
-  } else if(q.id === 'a1_occupation_cultivation' || q.id === 'grazing_access'){
-    // handled below by cultivatedLayer/occupationLayer/grazingLayer/
-    // accessRoutesLayer — no portion wash, matching the reference maps
-    // (which show no yellow fill, just the actual footprints/routes over
-    // the plain parcel outlines).
   } else if(QUESTION_SUBGROUPS[q.id]){
     QUESTION_SUBGROUPS[q.id].forEach(group => highlight(group.ids, group.style));
-  } else {
-    highlight(unionPortions(q), YELLOW_STYLE);
   }
 
   // Graveyard question: show actual site locations (from the gpkg), not just
@@ -918,7 +1120,7 @@ function showQuestion(q){
 
   const nUnion = unionPortions(q).length;
   const countMsg = q.id === 'a2_graveyards'
-      ? `${nUnion} portions affected (highlighted yellow); ${graveyardLayer.getLayers().length} actual grave/burial-site locations marked (red crosses).`
+      ? `${nUnion} portions affected; ${graveyardLayer.getLayers().length} actual grave/burial-site locations marked (red crosses).`
       : q.id === 'a4_trust_state'
       ? `All farm portions colored by ownership category — ${Object.entries(OWNER_TYPE_COLORS).map(([k])=>k).join(', ')} — matching the reference map's legend. ${nUnion} portions specifically trigger A4 (inside/contiguous with trust or government ownership).`
       : q.id === 'beneficiary'
@@ -933,10 +1135,10 @@ function showQuestion(q){
           return `${g.ids.length} portions (${name})`;
         }).join(', ') + ' — hatch-highlighted matching the reference map\'s legend.'
       : q.maps.length > 1
-      ? `${nUnion} portions affected across all years (highlighted yellow). Pick a year to isolate it (red) and open its map.`
+      ? `${nUnion} portions affected across all years. Pick a year to open its map.`
       : (nUnion > 0
-          ? `${nUnion} portions affected (highlighted yellow). Open the reference map below.`
-          : `Open the reference map below. (No portion highlight for this question — see PDF.)`);
+          ? `${nUnion} portions affected. Open the reference map below.`
+          : `Open the reference map below.`);
   document.getElementById('topbarDesc').textContent =
     (q.desc ? q.desc + ' — ' : '') + countMsg;
 
@@ -972,11 +1174,20 @@ function showQuestion(q){
 }
 
 function selectMap(q, m, btn){
-  // re-apply yellow to the whole union, then red for just this map
-  clearHighlights();
-  highlight(unionPortions(q), YELLOW_STYLE);
   const ids = MAP_PORTIONS[m.file] || [];
-  highlight(ids, RED_STYLE);
+
+  // B4: swap in that year's actual cultivated-field footprints (green =
+  // commercial, yellow = informal). A6: stack each year's own raw occupation
+  // footprints (1992 solid, each later year a denser hatch on top), matching
+  // the reference maps' "only visible in X" / "visible in X, Y and Z" style.
+  clearYearOverlay();
+  if(q.id === 'b4_cultivation' && CULTIVATED_YEAR_LAYERS[m.label]){
+    yearOverlayLayer = CULTIVATED_YEAR_LAYERS[m.label];
+    yearOverlayLayer.addTo(map);
+  } else if(q.id === 'a6_occupation' && A6_YEAR_STACK[m.label]){
+    yearOverlayLayer = buildA6Layer(m.label);
+    yearOverlayLayer.addTo(map);
+  }
 
   document.querySelectorAll('.year-btn').forEach(n=>n.classList.remove('year-btn-active'));
   btn.classList.add('year-btn-active');
@@ -997,13 +1208,14 @@ function selectMap(q, m, btn){
     link.href = m.file;
     link.style.display = 'inline-block';
     document.getElementById('topbarDesc').textContent =
-      `${m.label}: this map's source layer is mis-projected in the gpkg, so no portions are highlighted for it. The PDF still opens.`;
+      `${m.label}: this map's source layer is mis-projected in the gpkg. The PDF still opens.`;
   } else {
     link.textContent = `Open ${m.label} static map (PDF) →`;
     link.href = m.file;
     link.style.display = 'inline-block';
     document.getElementById('topbarDesc').textContent =
-      `${m.label}: ${ids.length} portions highlighted red; other years remain yellow.`;
+      `${m.label}: ${ids.length} portions affected` +
+      (yearOverlayLayer ? '; actual footprints shown on the map.' : '.');
   }
 }
 
