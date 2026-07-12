@@ -566,9 +566,22 @@ function buildA6Layer(label){
 // continuous-occupation footprints) — swapped out each time a year/range
 // button is clicked, cleared when the question changes.
 let yearOverlayLayer = null;
+// Historical aerial photo backdrop for the selected year (mosaicked from
+// georeferenced NGI scans), shown underneath yearOverlayLayer. 2025 isn't
+// included here — the live Esri basemap already shows current imagery.
+// 2019 has no source scan available yet.
+const YEAR_IMAGERY = {
+  '1955': { url:'data/imagery/1955.png', bounds:[[-30.6439695,30.4625412],[-30.5783098,30.5275965]] },
+  '1976': { url:'data/imagery/1976.png', bounds:[[-30.6486909,30.4268983],[-30.5655923,30.5215416]] },
+  '1992': { url:'data/imagery/1992.png', bounds:[[-30.6645642,30.4471511],[-30.5862057,30.5428494]] },
+  '2013': { url:'data/imagery/2013.png', bounds:[[-30.6326207,30.4295125],[-30.5569868,30.5409594]] },
+};
+let yearImageryLayer = null;
 function clearYearOverlay(){
   if(yearOverlayLayer && map.hasLayer(yearOverlayLayer)) map.removeLayer(yearOverlayLayer);
   yearOverlayLayer = null;
+  if(yearImageryLayer && map.hasLayer(yearImageryLayer)) map.removeLayer(yearImageryLayer);
+  yearImageryLayer = null;
 }
 
 let occupationLayer = L.layerGroup();
@@ -1186,6 +1199,17 @@ function selectMap(q, m, btn){
   // footprints (1992 solid, each later year a denser hatch on top), matching
   // the reference maps' "only visible in X" / "visible in X, Y and Z" style.
   clearYearOverlay();
+
+  // A6's buttons are labelled as ranges ("1992–2013") rather than a single
+  // year — the photo backdrop for those is the range's end year.
+  const imageryYear = q.id === 'b4_cultivation' ? m.label
+    : q.id === 'a6_occupation' ? m.label.split('–').pop()
+    : null;
+  if(imageryYear && YEAR_IMAGERY[imageryYear]){
+    const cfg = YEAR_IMAGERY[imageryYear];
+    yearImageryLayer = L.imageOverlay(cfg.url, cfg.bounds, { opacity:0.85 }).addTo(map);
+  }
+
   if(q.id === 'b4_cultivation' && CULTIVATED_YEAR_LAYERS[m.label]){
     yearOverlayLayer = CULTIVATED_YEAR_LAYERS[m.label];
     yearOverlayLayer.addTo(map);
@@ -1220,7 +1244,8 @@ function selectMap(q, m, btn){
     link.style.display = 'inline-block';
     document.getElementById('topbarDesc').textContent =
       `${m.label}: ${ids.length} portions affected` +
-      (yearOverlayLayer ? '; actual footprints shown on the map.' : '.');
+      (yearOverlayLayer ? '; actual footprints shown on the map' : '') +
+      (yearImageryLayer ? '; historical aerial photo shown as backdrop.' : '.');
   }
 }
 
